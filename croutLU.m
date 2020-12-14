@@ -24,6 +24,8 @@ for j = 2 : length(A)
     end
 end
 
+
+
 % forward substitution
 y = zeros(length(A),1);
 for i = 1:length(A)
