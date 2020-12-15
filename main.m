@@ -1,7 +1,7 @@
 %{
 Continuation Power Flow
 Author: Abodh Poudyal
-Last updated: December 13, 2020
+Last updated: December 14, 2020
 %}
 clear;
 clc;
@@ -88,8 +88,12 @@ ek_positions = [transpose(1:n_bus) (pq_bus_logic == 0)  pq_bus_logic];
 % K vector
 K = [Ps(2:end);Qs(bus_data.data(:,3) == 0)];
 
-% define the bus for which the CPF analysis is to be done
-busCPF = 10;
+% % define the bus for which the CPF analysis is to be done
+busCPF = 11;
+volts = [];
+lambdas = [];
+
+% bus = [1:n_bus];
 
 %% Calculating the Y-bus matrix
 Y_bus = Ybus(n_bus, n_branch, branch_imp, bus_imp, from, to);
@@ -102,15 +106,22 @@ B = imag(Y_bus); % susceptance (B) <- the imaginary part of admittance
 %     base_MW, G, B,Y_bus, V_flat, delta_flat,n_pq, n_pv, pq_bus_id, ...
 %     pv_bus_id, lambda*Ps, lambda*Qs);
 
-%% PV curve - Part 1: Changing Lambda
+%% Continuation power flow
+% looping to get the result for all the buses
+% for i = 1:length(pq_bus_id)
+%     volts = [];
+%     lambdas = [];
+%     busCPF = bus(pq_bus_id(i));    
+    
+% PV curve - Part 1: Changing Lambda
 sigma = 0.1;             
 lambda = 0;  
 [V_flat,delta_flat,~] = powerflow(tolerance, n_bus, bus_data,...
-        base_MW, G, B, Y_bus, V_flat, delta_flat,n_pq, n_pv, pq_bus_id, ...
-        pv_bus_id, lambda*Ps, lambda*Qs);
-    
-delta_CPF = delta_flat(bus_data.data(:,3) ~= 3);
-V_CPF = V_flat(bus_data.data(:,3) == 0);
+        base_MW, G, B, Y_bus, V_flat, delta_flat,n_pq, n_pv, ...
+        pq_bus_id, pv_bus_id, lambda*Ps, lambda*Qs);
+
+%     delta_CPF = delta_flat(bus_data.data(:,3) ~= 3);
+%     V_CPF = V_flat(bus_data.data(:,3) == 0);
 iter = 0;
 
 while iter < 10
@@ -119,50 +130,57 @@ while iter < 10
     plot_lambda = lambda;
     plot_V = V_flat;
     plot_delta = delta_flat; 
-        
-    % delta/V/lambda solution vector
-    d_V_L = [delta_CPF; V_CPF; lambda];
-    
+
+%         % delta/V/lambda solution vector
+%         d_V_L = [delta_CPF; V_CPF; lambda];
+
     % Jacobian 
-    [J] = Jacobian(V_flat, delta_flat, n_bus, n_pq, pq_bus_id, G, B, Y_bus);
-    
+    [J] = Jacobian(V_flat, delta_flat, n_bus, n_pq, pq_bus_id, G,...
+        B, Y_bus);
+
     % ek vector -> since we are changing lambda we keep 1 at the last
     ek = [zeros(1,length(J)) 1];
-    
+
     % augmented Jacobian
     aug_J = [J -K; ek];
-    
+
     %inversion using crout's method
     delta_d_V_L = croutLU(aug_J, ek);
-    
-    % solution 
-    d_V_L = d_V_L + sigma * delta_d_V_L;
-    
-    % extracting and assigning the respective parameters
-    % delta for CPF
-    delta_CPF = d_V_L(1:length(delta_CPF));
-    % update original delta
-    delta_flat(bus_data.data(:,3) ~= 3) = delta_CPF;
-    
-    % V for CPF
-    V_CPF = d_V_L(length(delta_CPF) + (1:length(V_CPF)));
-    % update original V
-    V_flat(bus_data.data(:,3) == 0) = V_CPF;
-    
-    % lambda
-    lambda = d_V_L(end);
-    
+
+%         % solution 
+%         d_V_L = d_V_L + sigma * delta_d_V_L;
+
+    [V_flat,delta_flat,lambda] = Update_Variables(sigma,delta_d_V_L,...
+            V_flat,delta_flat,lambda,bus_data);
+
+%         % extracting and assigning the respective parameters
+%         % delta for CPF
+%         delta_CPF = d_V_L(1:length(delta_CPF));
+%         % update original delta
+%         delta_flat(bus_data.data(:,3) ~= 3) = delta_CPF;
+% 
+%         % V for CPF
+%         V_CPF = d_V_L(length(delta_CPF) + (1:length(V_CPF)));
+%         % update original V
+%         V_flat(bus_data.data(:,3) == 0) = V_CPF;
+% 
+%         % lambda
+%         lambda = d_V_L(end);
+
     %%%%%%%%%%%%%%%%%%%%%%%%%% CORRECTOR %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     [V_flat,delta_flat,iter] = powerflow(tolerance, n_bus, bus_data,...
-        base_MW, G, B, Y_bus, V_flat, delta_flat,n_pq, n_pv, pq_bus_id, ...
-        pv_bus_id, lambda*Ps, lambda*Qs);
-    
-    plot(plot_lambda,plot_V(busCPF),'or'); hold on;
-    title(['CPF for Bus ' num2str(busCPF)])
-    grid('on')  
-end
+        base_MW, G, B, Y_bus, V_flat, delta_flat,n_pq, n_pv, ...
+        pq_bus_id, pv_bus_id, lambda*Ps, lambda*Qs);
 
-%% PV curve - Part 2: Changing V
+%         plot(plot_lambda,plot_V(busCPF),'or'); hold on;
+%         title(['CPF for Bus ' num2str(busCPF)])
+%         grid('on')  
+    volts = [volts;plot_V(busCPF)];
+    lambdas = [lambdas;plot_lambda];
+end
+size_A = length(volts);
+
+% PV curve - Part 2: Changing V
 sigma = 0.005;             
 lambda = plot_lambda;
 V_flat = plot_V;
@@ -174,78 +192,147 @@ while lambda > change_factor * Nose
     %%%%%%%%%%%%%%%%%%%%%%%%%% PREDICTOR %%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
     % delta/V/lambda solution vector
 %     d_V_L = [delta_CPF; V_CPF; lambda];
-    
+
     % Jacobian 
     [J] = Jacobian(V_flat, delta_flat, n_bus, n_pq, pq_bus_id, G, B,Y_bus);
-    
-    % ek vector -> since we are changing lambda we keep 1 at the last
+
+    % ek vector -> since we are changing V we keep -1 at the bus node
     ek = [zeros(1,length(J)) 0];
     b = [zeros(1,length(J)) 1]; % used for crout's LU
-    
+
     % put -1 to the bus on which CPF analyis is to be done
-    ek(length(delta_CPF) + ek_positions(busCPF,3)) = -1;
-        
+    ek(length(delta_flat(bus_data.data(:,3) ~= 3)) + ...
+        ek_positions(busCPF,3)) = -1;
+
     % augmented Jacobian
     aug_J = [J -K; ek];
-    
+
     %inversion using crout's method
     delta_d_V_L = croutLU(aug_J, b);
-    
-    % solution 
-    d_V_L = d_V_L + sigma * delta_d_V_L;
-    
+
+%         % solution 
+%         d_V_L = d_V_L + sigma * delta_d_V_L;
+
     [V_flat,delta_flat,lambda] = Update_Variables(sigma,delta_d_V_L,...
             V_flat,delta_flat,lambda,bus_data);
-        
+
     %%%%%%%%%%%%%%%%%%%%%%%%%% CORRECTOR %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     mismatch = power_mismatch(lambda*Ps, lambda*Qs, G, B, V_flat,...
         delta_flat, n_bus, pq_bus_id);
-    
+
     while max(abs(mismatch)) <= 0.01
         % Jacobian 
         [J] = Jacobian(V_flat, delta_flat, n_bus, n_pq, pq_bus_id, G,...
             B,Y_bus);
-        
+
         % augmented Jacobian
         aug_J = [J -lambda*K; ek];
-    
+
         % inversion using crout's method
         delta_d_V_L = croutLU(aug_J, [mismatch;0]);        
-        
+
         [V_flat,delta_flat,lambda] = Update_Variables(sigma,delta_d_V_L,...
             V_flat,delta_flat,lambda,bus_data);
-        
+
         % mismatch
         mismatch = power_mismatch(lambda*Ps, lambda*Qs, G, B, V_flat,...
         delta_flat, n_bus, pq_bus_id);    
     end
-    
+
     if lambda>Nose
         Nose=lambda;
     end
-    
-    plot(lambda,V_flat(busCPF),'ob'); hold on;
-    title(['CPF for Bus ' num2str(busCPF)])
-    grid('on')    
+
+%         plot(lambda,V_flat(busCPF),'ob'); hold on;
+%         title(['CPF for Bus ' num2str(busCPF)])
+%         grid('on')    
+    volts = [volts;V_flat(busCPF)];
+    lambdas = [lambdas;lambda];
+end
+size_B = length(volts) - size_A;
+
+% PV curve - Part 3: Switching back to lambda
+sigma = 0.1;
+iter = 0;
+while iter < 10 && lambda >= 0
+    %%%%%%%%%%%%%%%%%%%%%%%%%% PREDICTOR %%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+    % Jacobian 
+    [J] = Jacobian(V_flat, delta_flat, n_bus, n_pq, pq_bus_id, G,...
+        B,Y_bus);
+    % ek vector -> since we are changing back to lambda and now it is 
+    % decreasing, we keep -1 at last
+    ek=[zeros(1,length(J)) -1];
+
+    % augmented Jacobian
+    aug_J = [J -lambda*K; ek];
+
+    % inversion using crout's method
+    delta_d_V_L = croutLU(aug_J, abs(ek));    
+
+    [V_flat,delta_flat,lambda] = Update_Variables(sigma,delta_d_V_L,...
+            V_flat,delta_flat,lambda,bus_data);
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%% CORRECTOR %%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+    [V_flat,delta_flat,iter] = powerflow(tolerance, n_bus, bus_data,...
+    base_MW, G, B, Y_bus, V_flat, delta_flat,n_pq, n_pv, pq_bus_id, ...
+    pv_bus_id, lambda*Ps, lambda*Qs);
+
+    if lambda < 0
+        break
+    end
+
+%         plot(lambda,V_flat(busCPF),'og'); hold on;
+%         title(['CPF for Bus ' num2str(busCPF)])
+%         grid('on')
+    volts = [volts;V_flat(busCPF)];
+    lambdas = [lambdas;lambda];
 end
 
+% plot the final results
+plot_CPF(volts, lambdas, size_A, size_B, busCPF)
+fprintf("\n Completed for Bus %d",busCPF)
+% end
 
+%% USER DEFINED FUNCTIONS START HERE
 %% Solving for power flow using NRPF algorithm
-
 function [V_final,Angle_final,iter] = powerflow(tolerance, n_bus,...
-    bus_data, base_MW, G, B, Y_bus, V_flat, delta_flat, n_pq, n_pv,...
-    pq_bus_id, pv_bus_id, Ps, Qs)
+        bus_data, base_MW, G, B, Y_bus, V_flat, delta_flat, n_pq, n_pv,...
+        pq_bus_id, pv_bus_id, Ps, Qs)
 
-    % Newton Rhapson Power Flow 
-    [Volt, Angle, iter] = ...
-        NewtonRhapson(tolerance, n_bus, n_pv, n_pq, pq_bus_id,...
-        V_flat, delta_flat, G, B, Y_bus, Ps, Qs);
+        % Newton Rhapson Power Flow 
+        [Volt, Angle, iter] = ...
+            NewtonRhapson(tolerance, n_bus, n_pv, n_pq, pq_bus_id,...
+            V_flat, delta_flat, G, B, Y_bus, Ps, Qs);
 
-    V_final = Volt(:,end);
-    Angle_final = Angle(:,end);
-%     plot_states(Volt, Angle)
+        V_final = Volt(:,end);
+        Angle_final = Angle(:,end);
+    %     plot_states(Volt, Angle)
 end
+
 %% plots of the result
+function plot_CPF(volts, lambdas, size_A, size_B, busCPF)
+    figure('color', [1,1,1])    
+    plot(lambdas(1:size_A),volts(1:size_A),'-^','Markersize',7,...
+        'Linewidth', 1)
+    hold on
+    plot(lambdas(size_A:size_A+size_B),volts(size_A:size_A+size_B),...
+        '-o','Markersize',5, 'Linewidth', 1)
+    hold on
+    plot(lambdas(size_A+size_B:length(lambdas)),volts(size_A+size_B:...
+        length(volts)),'-d','Markersize',5, 'Linewidth', 1)
+    hold on
+    grid on
+    
+    ylabel('Voltage (pu)')
+    xlabel('\lambda')
+    title(strcat('Continuation Power Flow for Bus ',string(busCPF)))
+    grid on
+%     set(gca,'XTick',(1:1:10))
+    set(gca,'gridlinestyle','--','fontname','Times New Roman',...
+        'fontsize',14);
+end
+
+% function to plot the states of the system
 function plot_states(Volt, Angle)
     % NRLF Voltage
     figure('color', [1,1,1])
@@ -263,7 +350,8 @@ function plot_states(Volt, Angle)
     title('NRPF')
     grid on
     set(gca,'XTick',(1:1:10))
-    set(gca,'gridlinestyle','--','fontname','Times New Roman','fontsize',12);
+    set(gca,'gridlinestyle','--','fontname','Times New Roman',...
+        'fontsize',12);
     lgd = legend (str, 'NumColumns', 4);
     lgd.FontSize = 9;
     hold off
@@ -279,13 +367,16 @@ function plot_states(Volt, Angle)
     title('NRPF')
     grid on
     set(gca,'XTick',(1:1:10))
-    set(gca,'gridlinestyle','--','fontname','Times New Roman','fontsize',12);
+    set(gca,'gridlinestyle','--','fontname','Times New Roman',...
+        'fontsize',12);
     lgd = legend (str, 'NumColumns', 3);
     lgd.FontSize = 9;
     hold off
 end
 
-function [V,theta,lambda] = Update_Variables(Step_Size,Error,V,theta,lambda,bus_data)
+%% Updating function for V, theta, and lambda
+function [V,theta,lambda] = Update_Variables(Step_Size,Error,V,theta,...
+    lambda,bus_data)
 n=length(V);
 Error=Step_Size*Error;
 dtheta = Error(1:n-1);
